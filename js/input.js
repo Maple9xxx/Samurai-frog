@@ -1,133 +1,133 @@
+// ============================================================
+// input.js — Keyboard + Touch input handler
+// ============================================================
+
 export class InputHandler {
   constructor(canvas) {
-    this.keys = { left: false, right: false, jump: false, attack: false };
-    this.justPressed = { jump: false, attack: false };
     this.canvas = canvas;
-    this.touchPointers = new Map();
+    this.keys = {
+      left:   false,
+      right:  false,
+      jump:   false,
+      attack: false,
+    };
+
+    // Edge-triggered flags (consumed once per press)
+    this._jumpPressed   = false;
+    this._attackPressed = false;
+
     this._bindKeyboard();
     this._bindTouch();
   }
 
-  _setKey(action, isDown) {
-    if (action === 'jump' || action === 'attack') {
-      if (isDown && !this.keys[action]) {
-        this.justPressed[action] = true;
-      }
-    }
-    this.keys[action] = isDown;
-  }
+  // ── Public API ────────────────────────────────────────────
+
+  /** True only on the frame the button was first pressed. */
+  get jumpPressed()   { const v = this._jumpPressed;   this._jumpPressed   = false; return v; }
+  get attackPressed() { const v = this._attackPressed; this._attackPressed = false; return v; }
+
+  // ── Keyboard ──────────────────────────────────────────────
 
   _bindKeyboard() {
     window.addEventListener('keydown', (e) => {
-      const code = e.code;
-      if (['ArrowLeft', 'ArrowRight', 'Space', 'KeyZ', 'KeyJ'].includes(code)) e.preventDefault();
-      if (code === 'ArrowLeft') this._setKey('left', true);
-      if (code === 'ArrowRight') this._setKey('right', true);
-      if (code === 'Space') this._setKey('jump', true);
-      if (code === 'KeyZ' || code === 'KeyJ') this._setKey('attack', true);
-    }, { passive: false });
+      switch (e.code) {
+        case 'ArrowLeft':  this.keys.left   = true; break;
+        case 'ArrowRight': this.keys.right  = true; break;
+        case 'Space':
+        case 'ArrowUp':
+          if (!this.keys.jump) this._jumpPressed = true;
+          this.keys.jump = true;
+          break;
+        case 'KeyZ':
+        case 'KeyJ':
+          if (!this.keys.attack) this._attackPressed = true;
+          this.keys.attack = true;
+          break;
+      }
+      // Prevent scroll / zoom
+      if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
 
     window.addEventListener('keyup', (e) => {
-      const code = e.code;
-      if (code === 'ArrowLeft') this._setKey('left', false);
-      if (code === 'ArrowRight') this._setKey('right', false);
-      if (code === 'Space') this._setKey('jump', false);
-      if (code === 'KeyZ' || code === 'KeyJ') this._setKey('attack', false);
+      switch (e.code) {
+        case 'ArrowLeft':  this.keys.left   = false; break;
+        case 'ArrowRight': this.keys.right  = false; break;
+        case 'Space':
+        case 'ArrowUp':    this.keys.jump   = false; break;
+        case 'KeyZ':
+        case 'KeyJ':       this.keys.attack = false; break;
+      }
     });
   }
 
-  _regionFromPoint(x, y) {
-    const w = this.canvas.width / (window.devicePixelRatio || 1);
-    const h = this.canvas.height / (window.devicePixelRatio || 1);
-    const leftZone = x < w * 0.42;
-    const topHalf = y < h * 0.6;
-    if (leftZone) {
-      return x < w * 0.2 ? 'left' : 'right';
-    }
-    if (topHalf) return 'jump';
-    return 'attack';
-  }
+  // ── Touch ─────────────────────────────────────────────────
 
   _bindTouch() {
-    const handleStart = (e) => {
-      e.preventDefault();
-      const rect = this.canvas.getBoundingClientRect();
-      for (const t of e.changedTouches) {
-        const x = (t.clientX - rect.left) * (this.canvas.width / rect.width) / (window.devicePixelRatio || 1);
-        const y = (t.clientY - rect.top) * (this.canvas.height / rect.height) / (window.devicePixelRatio || 1);
-        const region = this._regionFromPoint(x, y);
-        this.touchPointers.set(t.identifier, region);
-        if (region === 'left') this._setKey('left', true);
-        if (region === 'right') this._setKey('right', true);
-        if (region === 'jump') this._setKey('jump', true);
-        if (region === 'attack') this._setKey('attack', true);
-      }
-    };
+    // Track active touches so multi-finger works simultaneously
+    this._activeTouches = new Map();
 
-    const handleMove = (e) => {
+    this.canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
-    };
-
-    const handleEnd = (e) => {
-      e.preventDefault();
-      for (const t of e.changedTouches) {
-        const region = this.touchPointers.get(t.identifier);
-        if (!region) continue;
-        if (region === 'left') this._setKey('left', false);
-        if (region === 'right') this._setKey('right', false);
-        if (region === 'jump') this._setKey('jump', false);
-        if (region === 'attack') this._setKey('attack', false);
-        this.touchPointers.delete(t.identifier);
-      }
-    };
-
-    this.canvas.addEventListener('touchstart', handleStart, { passive: false });
-    this.canvas.addEventListener('touchmove', handleMove, { passive: false });
-    this.canvas.addEventListener('touchend', handleEnd, { passive: false });
-    this.canvas.addEventListener('touchcancel', handleEnd, { passive: false });
-
-    this.canvas.addEventListener('pointerdown', (e) => {
-      if (e.pointerType !== 'touch') return;
-      e.preventDefault();
-      const rect = this.canvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) * (this.canvas.width / rect.width) / (window.devicePixelRatio || 1);
-      const y = (e.clientY - rect.top) * (this.canvas.height / rect.height) / (window.devicePixelRatio || 1);
-      const region = this._regionFromPoint(x, y);
-      this.touchPointers.set(e.pointerId, region);
-      if (region === 'left') this._setKey('left', true);
-      if (region === 'right') this._setKey('right', true);
-      if (region === 'jump') this._setKey('jump', true);
-      if (region === 'attack') this._setKey('attack', true);
+      for (const t of e.changedTouches) this._handleTouchStart(t);
     }, { passive: false });
 
-    this.canvas.addEventListener('pointerup', (e) => {
-      if (e.pointerType !== 'touch') return;
-      const region = this.touchPointers.get(e.pointerId);
-      if (region === 'left') this._setKey('left', false);
-      if (region === 'right') this._setKey('right', false);
-      if (region === 'jump') this._setKey('jump', false);
-      if (region === 'attack') this._setKey('attack', false);
-      this.touchPointers.delete(e.pointerId);
-    });
-    this.canvas.addEventListener('pointercancel', (e) => {
-      if (e.pointerType !== 'touch') return;
-      const region = this.touchPointers.get(e.pointerId);
-      if (region === 'left') this._setKey('left', false);
-      if (region === 'right') this._setKey('right', false);
-      if (region === 'jump') this._setKey('jump', false);
-      if (region === 'attack') this._setKey('attack', false);
-      this.touchPointers.delete(e.pointerId);
-    });
+    this.canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) this._handleTouchEnd(t);
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchcancel', (e) => {
+      e.preventDefault();
+      for (const t of e.changedTouches) this._handleTouchEnd(t);
+    }, { passive: false });
   }
 
-  consumePressed(action) {
-    const pressed = this.justPressed[action];
-    this.justPressed[action] = false;
-    return pressed;
+  _getTouchZone(clientX, clientY) {
+    const rect   = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width  / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+    // Convert to logical canvas coords (before the 2x ctx transform)
+    const lx = (clientX - rect.left)  * scaleX / 2;
+    const ly = (clientY - rect.top)   * scaleY / 2;
+
+    const canvasW = 480;
+    const canvasH = 270;
+
+    // Right-side buttons
+    if (lx > canvasW * 0.55) {
+      if (ly < canvasH * 0.65) return 'jump';
+      return 'attack';
+    }
+    // Left D-pad
+    if (lx < canvasW * 0.45) {
+      const mid = canvasW * 0.22;
+      if (lx < mid) return 'left';
+      return 'right';
+    }
+    return null;
   }
 
-  resetTransient() {
-    this.justPressed.jump = false;
-    this.justPressed.attack = false;
+  _handleTouchStart(touch) {
+    const zone = this._getTouchZone(touch.clientX, touch.clientY);
+    if (!zone) return;
+    this._activeTouches.set(touch.identifier, zone);
+
+    if (zone === 'left')   this.keys.left   = true;
+    if (zone === 'right')  this.keys.right  = true;
+    if (zone === 'jump')   { if (!this.keys.jump)   this._jumpPressed   = true; this.keys.jump   = true; }
+    if (zone === 'attack') { if (!this.keys.attack) this._attackPressed = true; this.keys.attack = true; }
+  }
+
+  _handleTouchEnd(touch) {
+    const zone = this._activeTouches.get(touch.identifier);
+    if (!zone) return;
+    this._activeTouches.delete(touch.identifier);
+
+    if (zone === 'left')   this.keys.left   = false;
+    if (zone === 'right')  this.keys.right  = false;
+    if (zone === 'jump')   this.keys.jump   = false;
+    if (zone === 'attack') this.keys.attack = false;
   }
 }

@@ -1,126 +1,227 @@
+// ============================================================
+// audio.js — Web Audio API synthesised SFX + procedural BGM
+// No external audio files — all sounds generated in code
+// ============================================================
+
 export class AudioManager {
   constructor() {
-    this.ctx = null;
-    this.master = null;
-    this.musicTimer = null;
-    this.enabled = false;
-    this.musicStep = 0;
-    this.musicLoop = null;
+    this._ctx     = null; // AudioContext (lazy init on first user interaction)
+    this._master  = null; // Master GainNode
+    this._bgmLoop = null; // BGM scheduler timeout
+    this._bgmBeat = 0;    // Current beat counter
+    this._muted   = false;
+    this._bgmPlaying = false;
   }
 
-  async init() {
-    if (this.enabled) return;
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
-    this.ctx = new AudioCtx();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = 0.3;
-    this.master.connect(this.ctx.destination);
-    this.enabled = true;
-    await this.ctx.resume();
-    this.startMusic();
+  // ── Init (must be called after a user gesture) ─────────────
+
+  init() {
+    if (this._ctx) return;
+    this._ctx    = new (window.AudioContext || window.webkitAudioContext)();
+    this._master = this._ctx.createGain();
+    this._master.gain.value = 0.35;
+    this._master.connect(this._ctx.destination);
   }
 
-  stop() {
-    if (this.musicLoop) clearInterval(this.musicLoop);
-    this.musicLoop = null;
-  }
-
-  _tone(type, freq, duration, gain = 0.1, targetFreq = null) {
-    if (!this.enabled || !this.ctx) return;
-    const ctx = this.ctx;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type;
-    osc.frequency.value = freq;
-    if (targetFreq !== null) {
-      osc.frequency.exponentialRampToValueAtTime(targetFreq, ctx.currentTime + duration);
+  toggleMute() {
+    this._muted = !this._muted;
+    if (this._master) {
+      this._master.gain.value = this._muted ? 0 : 0.35;
     }
-    g.gain.value = gain;
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
-    osc.connect(g);
-    g.connect(this.master);
-    osc.start();
-    osc.stop(ctx.currentTime + duration + 0.02);
+    return this._muted;
   }
 
-  _noiseBurst(duration = 0.05, gain = 0.12, highpass = 1000) {
-    if (!this.enabled || !this.ctx) return;
-    const ctx = this.ctx;
-    const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
+  // ── SFX helpers ───────────────────────────────────────────
+
+  /** @param {OscillatorNode} osc @param {GainNode} gain */
+  _connect(osc, gain) {
+    osc.connect(gain);
+    gain.connect(this._master);
+  }
+
+  _osc(type, freq, startTime, endFreq, duration) {
+    const osc  = this._ctx.createOscillator();
+    const gain = this._ctx.createGain();
+    osc.type      = type;
+    osc.frequency.setValueAtTime(freq, startTime);
+    if (endFreq !== undefined) {
+      osc.frequency.linearRampToValueAtTime(endFreq, startTime + duration);
+    }
+    gain.gain.setValueAtTime(0.4, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    this._connect(osc, gain);
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+  }
+
+  _noise(duration, startTime, filterFreq = 2000) {
+    const bufferSize = this._ctx.sampleRate * duration;
+    const buffer     = this._ctx.createBuffer(1, bufferSize, this._ctx.sampleRate);
+    const data       = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-    const source = ctx.createBufferSource();
+
+    const source = this._ctx.createBufferSource();
     source.buffer = buffer;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'highpass';
-    filter.frequency.value = highpass;
-    const g = ctx.createGain();
-    g.gain.value = gain;
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+
+    const filter = this._ctx.createBiquadFilter();
+    filter.type            = 'highpass';
+    filter.frequency.value = filterFreq;
+
+    const gain = this._ctx.createGain();
+    gain.gain.setValueAtTime(0.3, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
     source.connect(filter);
-    filter.connect(g);
-    g.connect(this.master);
-    source.start();
-    source.stop(ctx.currentTime + duration + 0.02);
+    filter.connect(gain);
+    gain.connect(this._master);
+    source.start(startTime);
   }
 
-  jump() {
-    this._tone('square', 300, 0.08, 0.12, 500);
+  // ── Sound Effects ─────────────────────────────────────────
+
+  playJump() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._osc('square', 300, t, 500, 0.1);
   }
 
-  doubleJump() {
-    this._tone('square', 600, 0.1, 0.13, 1000);
+  playDoubleJump() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._osc('square', 300, t, 500, 0.1);
+    this._osc('square', 600, t + 0.02, 1000, 0.1);
   }
 
-  slash() {
-    this._noiseBurst(0.08, 0.12, 2000);
-    this._tone('sawtooth', 200, 0.08, 0.05, 80);
+  playSlash() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._noise(0.08, t, 2000);
+    this._osc('sawtooth', 200, t, 80, 0.1);
   }
 
-  hit() {
-    this._tone('square', 150, 0.1, 0.14);
+  playHit() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._osc('square', 150, t, 80, 0.1);
   }
 
-  collect() {
-    this._tone('sine', 523, 0.08, 0.08);
-    setTimeout(() => this._tone('sine', 659, 0.08, 0.08), 85);
-    setTimeout(() => this._tone('sine', 784, 0.08, 0.08), 170);
+  playCollect() {
+    if (!this._ctx) return;
+    const t    = this._ctx.currentTime;
+    const notes = [523, 659, 784]; // C5 E5 G5
+    notes.forEach((freq, i) => {
+      this._osc('sine', freq, t + i * 0.08, freq, 0.08);
+    });
   }
 
-  hurt() {
-    this._tone('square', 100, 0.2, 0.16);
+  playHurt() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._osc('square', 100, t, 60, 0.2);
   }
 
-  death() {
-    this._tone('sine', 440, 0.18, 0.12, 220);
-    setTimeout(() => this._tone('sine', 220, 0.16, 0.1, 110), 140);
+  playDeath() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._osc('sine', 440, t, 110, 0.5);
   }
 
-  enemyDeath() {
-    this._noiseBurst(0.05, 0.08, 800);
-    this._tone('sawtooth', 300, 0.07, 0.08, 50);
+  playEnemyDeath() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    this._noise(0.05, t, 1000);
+    this._osc('sawtooth', 300, t, 50, 0.12);
   }
 
-  goal() {
-    const notes = [523, 587, 659, 784, 1047];
-    notes.forEach((f, i) => setTimeout(() => this._tone('sine', f, 0.1, 0.08), i * 105));
+  playGoal() {
+    if (!this._ctx) return;
+    const t     = this._ctx.currentTime;
+    const notes = [523, 587, 659, 784, 1047]; // C5 D5 E5 G5 C6
+    notes.forEach((freq, i) => {
+      this._osc('sine', freq, t + i * 0.1, freq, 0.12);
+    });
   }
 
-  startMusic() {
-    if (!this.enabled || this.musicLoop) return;
-    const notes = [261.63, 293.66, 329.63, 392.0, 440.0];
-    const bass = [130.81, 196.0];
-    let step = 0;
-    this.musicLoop = setInterval(() => {
-      if (!this.enabled) return;
-      const beat = step % 8;
-      const note = notes[beat % notes.length];
-      this._tone('triangle', note, 0.16, 0.035);
-      if (beat % 2 === 0) this._tone('square', bass[(beat / 2) % bass.length], 0.22, 0.04);
-      if (beat === 0 || beat === 4) this._noiseBurst(0.025, 0.03, 400);
-      step++;
-    }, 250);
+  playPowerUp() {
+    if (!this._ctx) return;
+    const t = this._ctx.currentTime;
+    [392, 523, 659, 784, 1047].forEach((freq, i) => {
+      this._osc('sine', freq, t + i * 0.07, freq * 1.05, 0.1);
+    });
+  }
+
+  // ── BGM ───────────────────────────────────────────────────
+
+  startBGM() {
+    if (!this._ctx || this._bgmPlaying) return;
+    this._bgmPlaying = true;
+    this._bgmBeat    = 0;
+    this._scheduleBGM();
+  }
+
+  stopBGM() {
+    this._bgmPlaying = false;
+    if (this._bgmLoop) clearTimeout(this._bgmLoop);
+  }
+
+  _scheduleBGM() {
+    if (!this._bgmPlaying) return;
+
+    const BPM        = 120;
+    const beatDur    = 60 / BPM;             // 0.5 s per beat
+    const t          = this._ctx.currentTime;
+    const BEATS_AHEAD = 4;
+
+    // Schedule 4 beats at a time for smooth playback
+    for (let b = 0; b < BEATS_AHEAD; b++) {
+      const bt = t + b * beatDur;
+      this._bgmBeat++;
+      this._playBGMBeat(bt, this._bgmBeat);
+    }
+
+    // Schedule next batch just before they play out
+    this._bgmLoop = setTimeout(
+      () => this._scheduleBGM(),
+      (BEATS_AHEAD - 1) * beatDur * 1000
+    );
+  }
+
+  _playBGMBeat(time, beat) {
+    // Pentatonic: C4 D4 E4 G4 A4
+    const scale = [261.63, 293.66, 329.63, 392.00, 440.00];
+    // Simple melody pattern over 8 beats
+    const melody = [0, 2, 4, 2,  4, 3, 1, 0];
+    const idx    = (beat - 1) % melody.length;
+    const freq   = scale[melody[idx]];
+
+    // Melody (triangle wave)
+    const mel = this._ctx.createOscillator();
+    const mG  = this._ctx.createGain();
+    mel.type = 'triangle';
+    mel.frequency.value = freq;
+    mG.gain.setValueAtTime(0.18, time);
+    mG.gain.exponentialRampToValueAtTime(0.001, time + 0.45);
+    mel.connect(mG);
+    mG.connect(this._master);
+    mel.start(time);
+    mel.stop(time + 0.5);
+
+    // Bass (square wave) — C3 / G3 alternating every 2 beats
+    const bassFreq = beat % 4 < 2 ? 130.81 : 196.00;
+    const bass = this._ctx.createOscillator();
+    const bG   = this._ctx.createGain();
+    bass.type = 'square';
+    bass.frequency.value = bassFreq;
+    bG.gain.setValueAtTime(0.08, time);
+    bG.gain.exponentialRampToValueAtTime(0.001, time + 0.48);
+    bass.connect(bG);
+    bG.connect(this._master);
+    bass.start(time);
+    bass.stop(time + 0.5);
+
+    // Kick-like noise burst every 2 beats
+    if (beat % 2 === 0) {
+      this._noise(0.03, time, 500);
+    }
   }
 }

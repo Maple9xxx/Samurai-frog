@@ -1,229 +1,319 @@
-import { AnimationState } from './animation.js';
-import { PLAYER, LEVEL, clamp } from './constants.js';
+// ============================================================
+// player.js — Player entity with FSM, physics, combat
+// ============================================================
+
+import {
+  GAME_WIDTH, GAME_HEIGHT,
+  GRAVITY, MAX_FALL_SPEED, PLAYER_SPEED, JUMP_FORCE, DOUBLE_JUMP_FORCE,
+  PLAYER_W, PLAYER_H,
+  INVINCIBILITY_TIME, ATTACK_DURATION, ATTACK_HITBOX_W, ATTACK_HITBOX_H,
+  STATE, GROUND_Y,
+} from './constants.js';
+import { PLAYER_ANIMS } from './animation.js';
+import { Sprite } from './sprite.js';
 
 export class Player {
-  constructor(x, y) {
-    this.spawnX = x;
-    this.spawnY = y;
-    this.x = x;
-    this.y = y;
-    this.prevX = x;
-    this.prevY = y;
-    this.w = PLAYER.width;
-    this.h = PLAYER.height;
+  constructor(x, y, audio) {
+    this.audio = audio;
+
+    // World-space position (bottom-center anchor)
+    this.x  = x;
+    this.y  = y;
     this.vx = 0;
     this.vy = 0;
-    this.facing = 1;
-    this.state = 'IDLE';
-    this.hp = PLAYER.maxHP;
-    this.invincible = 0;
-    this.onGround = false;
-    this.doubleJumpUnlocked = false;
-    this.canDoubleJump = false;
-    this.attackTimer = 0;
-    this.attackLock = 0;
-    this.hurtTimer = 0;
-    this.deadTimer = 0;
-    this.score = 0;
-    this.blink = 1;
-    this.animations = {
-      idle: new AnimationState([0, 1, 2, 3], 200, true),
-      run: new AnimationState([0, 1, 2, 3, 4, 5], 80, true),
-      jump: new AnimationState([0, 1], 150, false),
-      fall: new AnimationState([0, 1], 150, false),
-      attack: new AnimationState([0, 1, 2, 3], 60, false),
-      hurt: new AnimationState([0, 1], 200, false),
-      dead: new AnimationState([0, 1, 2], 300, false)
+
+    this.hp     = 3;
+    this.maxHp  = 3;
+    this.score  = 0;
+    this.state  = STATE.IDLE;
+    this.facingRight = true;
+
+    // Flags
+    this.isOnGround     = false;
+    this.hasDoubleJump  = false;
+    this.canDoubleJump  = false; // resets on land
+    this.invincible     = false;
+    this.invincibleTimer = 0;
+    this.attackTimer    = 0;
+    this.isAttacking    = false;
+    this.hurtTimer      = 0;
+
+    // Blink alpha for invincibility frame
+    this._blinkTimer    = 0;
+    this._blinkAlpha    = 1;
+
+    // Animations — keyed by state
+    this._anims = {
+      [STATE.IDLE]:        PLAYER_ANIMS.idle(),
+      [STATE.RUNNING]:     PLAYER_ANIMS.run(),
+      [STATE.JUMPING]:     PLAYER_ANIMS.jump(),
+      [STATE.DOUBLE_JUMP]: PLAYER_ANIMS.jump(),
+      [STATE.FALLING]:     PLAYER_ANIMS.fall(),
+      [STATE.ATTACKING]:   PLAYER_ANIMS.attack(),
+      [STATE.HURT]:        PLAYER_ANIMS.hurt(),
+      [STATE.DEAD]:        PLAYER_ANIMS.dead(),
+    };
+    this._currentAnim = this._anims[STATE.IDLE];
+
+    // VFX: hit effects array [{x,y,progress}]
+    this.hitEffects = [];
+  }
+
+  // ── Computed hitbox ───────────────────────────────────────
+
+  get hitbox() {
+    return {
+      x:  this.x - PLAYER_W / 2,
+      y:  this.y - PLAYER_H,
+      w:  PLAYER_W,
+      h:  PLAYER_H,
+      vy: this.vy,
     };
   }
 
-  get hitbox() {
-    return { x: this.x + 6, y: this.y + 5, w: 20, h: 36 };
-  }
-
   get attackHitbox() {
-    const hb = this.hitbox;
-    if (this.facing >= 0) return { x: hb.x + hb.w - 2, y: hb.y + 4, w: 18, h: 24 };
-    return { x: hb.x - 16, y: hb.y + 4, w: 18, h: 24 };
+    if (!this.isAttacking) return null;
+    const dir = this.facingRight ? 1 : -1;
+    return {
+      x: this.x + (this.facingRight ? 0 : -ATTACK_HITBOX_W),
+      y: this.y - PLAYER_H * 0.85,
+      w: ATTACK_HITBOX_W,
+      h: ATTACK_HITBOX_H,
+    };
   }
 
-  respawn() {
-    this.x = this.spawnX;
-    this.y = this.spawnY;
-    this.prevX = this.spawnX;
-    this.prevY = this.spawnY;
-    this.vx = 0;
-    this.vy = 0;
-    this.facing = 1;
-    this.state = 'IDLE';
-    this.hp = PLAYER.maxHP;
-    this.invincible = 0;
-    this.onGround = false;
-    this.canDoubleJump = false;
-    this.attackTimer = 0;
-    this.attackLock = 0;
-    this.hurtTimer = 0;
-    this.deadTimer = 0;
-    this.score = 0;
-    this.blink = 1;
-    for (const anim of Object.values(this.animations)) anim.reset();
-  }
+  // ── Update ────────────────────────────────────────────────
 
-  unlockDoubleJump() {
-    this.doubleJumpUnlocked = true;
-    this.canDoubleJump = true;
-  }
-
-  takeDamage(amount, knockbackX = 0) {
-    if (this.invincible > 0 || this.state === 'DEAD') return false;
-    this.hp = Math.max(0, this.hp - amount);
-    this.invincible = PLAYER.invincibleTime;
-    this.vx = knockbackX;
-    this.vy = -220;
-    this.state = this.hp <= 0 ? 'DEAD' : 'HURT';
-    if (this.hp <= 0) {
-      this.deadTimer = 0.8;
-      this.animations.dead.reset();
-    } else {
-      this.hurtTimer = 0.35;
-      this.animations.hurt.reset();
-    }
-    return true;
-  }
-
-  addScore(points) {
-    this.score += points;
-  }
-
-  update(dt, input, level, audio) {
-    this.prevX = this.x;
-    this.prevY = this.y;
-
-    if (this.invincible > 0) this.invincible = Math.max(0, this.invincible - dt);
-    if (this.attackLock > 0) this.attackLock = Math.max(0, this.attackLock - dt);
-    if (this.hurtTimer > 0) this.hurtTimer = Math.max(0, this.hurtTimer - dt);
-    if (this.deadTimer > 0) this.deadTimer = Math.max(0, this.deadTimer - dt);
-
-    if (this.state === 'DEAD') {
-      this.vx *= 0.95;
-      this.vy = clamp(this.vy + PLAYER.gravity * dt * 0.4, -9999, PLAYER.maxFallSpeed);
-      this.x += this.vx * dt;
-      this.y += this.vy * dt;
-      this.x = clamp(this.x, 0, LEVEL.width - this.w);
-      if (this.y > LEVEL.groundY) this.y = LEVEL.groundY;
-      this._updateAnimation(dt);
-      this._updateBlink();
+  update(dt, input, level) {
+    if (this.state === STATE.DEAD) {
+      this._currentAnim.update(dt);
       return;
     }
 
-    const attackPressed = input.consumePressed('attack');
-    const jumpPressed = input.consumePressed('jump');
-    const move = (input.keys.right ? 1 : 0) - (input.keys.left ? 1 : 0);
+    this._updateTimers(dt);
+    this._handleInput(dt, input);
+    this._applyPhysics(dt);
+    this._resolveLevel(level);
+    this._updateState();
+    this._currentAnim.update(dt);
+    this._updateVFX(dt);
+  }
 
-    if (move !== 0) this.facing = move;
-
-    if (this.attackLock <= 0 && attackPressed) {
-      this.state = 'ATTACKING';
-      this.attackTimer = 0.24;
-      this.attackLock = 0.3;
-      this.animations.attack.reset();
-      if (audio) audio.slash();
+  _updateTimers(dt) {
+    // Invincibility
+    if (this.invincible) {
+      this.invincibleTimer -= dt;
+      this._blinkTimer     += dt;
+      this._blinkAlpha      = Math.floor(this._blinkTimer / 0.1) % 2 === 0 ? 0.4 : 1;
+      if (this.invincibleTimer <= 0) {
+        this.invincible   = false;
+        this._blinkAlpha  = 1;
+      }
     }
 
-    if (this.state === 'ATTACKING') {
+    // Attack timer
+    if (this.isAttacking) {
       this.attackTimer -= dt;
       if (this.attackTimer <= 0) {
-        this.state = this.onGround ? (Math.abs(this.vx) > 1 ? 'RUNNING' : 'IDLE') : (this.vy < 0 ? 'JUMPING' : 'FALLING');
+        this.isAttacking = false;
+        this._setState(this.isOnGround ? STATE.IDLE : STATE.FALLING);
       }
     }
 
-    if (jumpPressed && this.state !== 'ATTACKING') {
-      if (this.onGround) {
-        this.vy = -PLAYER.jumpSpeed;
-        this.onGround = false;
-        this.canDoubleJump = this.doubleJumpUnlocked;
-        this.state = 'JUMPING';
-        this.animations.jump.reset();
-        if (audio) audio.jump();
-      } else if (this.canDoubleJump) {
-        this.vy = -PLAYER.jumpSpeed;
+    // Hurt timer
+    if (this.state === STATE.HURT) {
+      this.hurtTimer -= dt;
+      if (this.hurtTimer <= 0) {
+        this._setState(this.isOnGround ? STATE.IDLE : STATE.FALLING);
+      }
+    }
+  }
+
+  _handleInput(dt, input) {
+    if (this.state === STATE.HURT || this.state === STATE.DEAD) return;
+
+    // ── Attack ────────────────────────────────────
+    if (input.attackPressed && !this.isAttacking) {
+      this.isAttacking = true;
+      this.attackTimer = ATTACK_DURATION;
+      this.audio.playSlash();
+      this._setState(STATE.ATTACKING);
+      return; // skip movement on attack frame
+    }
+
+    // ── Horizontal movement ───────────────────────
+    if (!this.isAttacking) {
+      if (input.keys.left) {
+        this.vx          = -PLAYER_SPEED;
+        this.facingRight = false;
+      } else if (input.keys.right) {
+        this.vx          = PLAYER_SPEED;
+        this.facingRight = true;
+      } else {
+        this.vx = 0;
+      }
+    }
+
+    // ── Jump ──────────────────────────────────────
+    if (input.jumpPressed) {
+      if (this.isOnGround) {
+        this.vy = JUMP_FORCE;
+        this.isOnGround = false;
+        this.audio.playJump();
+        this._setState(STATE.JUMPING);
+      } else if (this.hasDoubleJump && this.canDoubleJump) {
+        this.vy            = DOUBLE_JUMP_FORCE;
         this.canDoubleJump = false;
-        this.state = 'DOUBLE_JUMP';
-        this.animations.jump.reset();
-        if (audio) audio.doubleJump();
+        this.audio.playDoubleJump();
+        this._setState(STATE.DOUBLE_JUMP);
       }
     }
+  }
 
-    if (this.state !== 'ATTACKING') {
-      this.vx = move * PLAYER.moveSpeed;
-    } else {
-      this.vx = move * PLAYER.moveSpeed * 0.2;
-    }
+  _applyPhysics(dt) {
+    if (this.state === STATE.DEAD) return;
 
-    this.vy = clamp(this.vy + PLAYER.gravity * dt, -9999, PLAYER.maxFallSpeed);
+    // Gravity
+    this.vy += GRAVITY * dt;
+    if (this.vy > MAX_FALL_SPEED) this.vy = MAX_FALL_SPEED;
+
     this.x += this.vx * dt;
     this.y += this.vy * dt;
-    this.x = clamp(this.x, 0, LEVEL.width - this.w);
 
-    // Update broad state for animation while airborne.
-    if (!this.onGround && this.state !== 'ATTACKING' && this.state !== 'HURT') {
-      this.state = this.vy < 0 ? (this.state === 'DOUBLE_JUMP' ? 'DOUBLE_JUMP' : 'JUMPING') : 'FALLING';
+    // World bounds — left edge only (right is open)
+    if (this.x < PLAYER_W / 2) {
+      this.x = PLAYER_W / 2;
+      this.vx = 0;
     }
-
-    this._updateAnimation(dt);
-
-    if (this.state === 'HURT' && this.hurtTimer <= 0) {
-      this.state = this.onGround ? (Math.abs(this.vx) > 1 ? 'RUNNING' : 'IDLE') : (this.vy < 0 ? 'JUMPING' : 'FALLING');
-    }
-
-    this._updateBlink();
   }
 
-  _updateBlink() {
-    if (this.invincible > 0) {
-      this.blink = 0.35 + Math.abs(Math.sin(performance.now() / 70)) * 0.65;
+  _resolveLevel(level) {
+    const box = {
+      x: this.x - PLAYER_W / 2,
+      y: this.y - PLAYER_H,
+      w: PLAYER_W,
+      h: PLAYER_H,
+      vy: this.vy,
+    };
+
+    const surface = level.getSurface(box);
+    if (surface) {
+      this.y           = surface.y;
+      this.vy          = 0;
+      this.isOnGround  = true;
+      this.canDoubleJump = this.hasDoubleJump; // refresh on land
     } else {
-      this.blink = 1;
+      // Only set airborne if we were previously grounded (prevents jitter)
+      if (this.isOnGround && this.vy > 0) {
+        this.isOnGround = false;
+      }
+    }
+
+    // Bottom of world kill
+    if (this.y > GAME_HEIGHT + 40) {
+      this.takeDamage(this.hp); // instant death
+    }
+
+    // Hazard damage
+    if (level.isOnHazard(box)) {
+      this.takeDamage(1);
     }
   }
 
-  _updateAnimation(dt) {
-    if (this.state === 'ATTACKING') this.animations.attack.update(dt);
-    else if (this.state === 'HURT') this.animations.hurt.update(dt);
-    else if (this.state === 'DEAD') this.animations.dead.update(dt);
-    else if (!this.onGround) {
-      if (this.vy < 0) this.animations.jump.update(dt);
-      else this.animations.fall.update(dt);
-    } else if (Math.abs(this.vx) > 1) {
-      this.animations.run.update(dt);
+  _updateState() {
+    if (this.isAttacking || this.state === STATE.HURT || this.state === STATE.DEAD) return;
+
+    if (!this.isOnGround) {
+      if (this.vy < 0) {
+        if (this.state !== STATE.DOUBLE_JUMP) this._setState(STATE.JUMPING);
+      } else {
+        this._setState(STATE.FALLING);
+      }
     } else {
-      this.animations.idle.update(dt);
+      if (this.vx !== 0) this._setState(STATE.RUNNING);
+      else                this._setState(STATE.IDLE);
     }
   }
 
-  land(y) {
-    this.y = y - this.h;
-    this.vy = 0;
-    this.onGround = true;
-    this.canDoubleJump = this.doubleJumpUnlocked;
-    if (this.state !== 'ATTACKING' && this.state !== 'DEAD') {
-      this.state = Math.abs(this.vx) > 1 ? 'RUNNING' : 'IDLE';
+  _setState(newState) {
+    if (this.state === newState) return;
+    this.state = newState;
+    const anim = this._anims[newState];
+    if (anim) {
+      anim.reset();
+      this._currentAnim = anim;
     }
   }
 
-  hitCeiling(y) {
-    this.y = y;
-    this.vy = Math.max(0, this.vy);
+  _updateVFX(dt) {
+    for (const fx of this.hitEffects) fx.progress += dt * 4;
+    this.hitEffects = this.hitEffects.filter(fx => fx.progress < 1);
   }
 
-  getCurrentFrame() {
-    if (this.state === 'ATTACKING') return this.animations.attack.getFrame();
-    if (this.state === 'HURT') return this.animations.hurt.getFrame();
-    if (this.state === 'DEAD') return this.animations.dead.getFrame();
-    if (!this.onGround) {
-      if (this.vy < 0) return this.animations.jump.getFrame();
-      return this.animations.fall.getFrame();
+  // ── Public combat API ─────────────────────────────────────
+
+  takeDamage(amount) {
+    if (this.invincible || this.state === STATE.DEAD) return;
+    this.hp -= amount;
+    this.audio.playHurt();
+
+    if (this.hp <= 0) {
+      this.hp = 0;
+      this._setState(STATE.DEAD);
+      this.audio.playDeath();
+      return;
     }
-    return Math.abs(this.vx) > 1 ? this.animations.run.getFrame() : this.animations.idle.getFrame();
+
+    // Knockback
+    this.vy              = -150;
+    this.vx              = this.facingRight ? -80 : 80;
+    this.invincible      = true;
+    this.invincibleTimer = INVINCIBILITY_TIME;
+    this._blinkTimer     = 0;
+    this.hurtTimer       = 0.35;
+    this._setState(STATE.HURT);
+  }
+
+  collectItem(type, value) {
+    if (type === 'Goldfish') {
+      this.hp = Math.min(this.hp + 1, this.maxHp);
+    } else if (type === 'HiddenPower') {
+      this.hasDoubleJump  = true;
+      this.canDoubleJump  = true;
+      this.audio.playPowerUp();
+      return; // different sound handled outside
+    }
+    this.score += value;
+    this.audio.playCollect();
+  }
+
+  addScore(amount) {
+    this.score += amount;
+  }
+
+  get isDead()  { return this.state === STATE.DEAD; }
+  get isAlive() { return this.state !== STATE.DEAD; }
+
+  // ── Draw ──────────────────────────────────────────────────
+
+  draw(ctx, cameraX) {
+    const sx = this.x - cameraX;
+    const sy = this.y;
+
+    // Draw hit VFX behind player
+    for (const fx of this.hitEffects) {
+      Sprite.drawHitEffect(ctx, sx, sy - PLAYER_H / 2, fx.progress);
+    }
+
+    Sprite.drawPlayer(
+      ctx,
+      sx,
+      sy,
+      this._currentAnim.frame,
+      this.state,
+      this.facingRight,
+      this._blinkAlpha,
+      this.hasDoubleJump,
+    );
   }
 }
