@@ -1,15 +1,129 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
 html, body {
   width: 100%; height: 100%;
   overflow: hidden;
-  background: #000;
+  background: #0a0a0a;
+  font-family: monospace;
+}
+
+/* ── Main wrapper: stack vertically on portrait, side-by-side on landscape ── */
+#app {
+  width: 100%;
+  height: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
 }
-canvas {
+
+/* ── Canvas: always 16:9, fills available width ── */
+#gameCanvas {
   display: block;
+  width: 100%;
+  max-width: calc(100vh * (16/9));  /* never wider than screen height allows */
+  aspect-ratio: 16 / 9;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   touch-action: none;
+  flex-shrink: 0;
 }
+
+/* ── HTML Control bar below canvas ── */
+#controls {
+  width: 100%;
+  max-width: calc(100vh * (16/9));
+  flex: 1;
+  min-height: 80px;
+  max-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(0,0,0,0.6);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* D-Pad: left side */
+#dpad {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Action buttons: right side */
+#actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+#actions-row {
+  display: flex;
+  gap: 10px;
+}
+
+/* Base button style */
+.ctrl-btn {
+  border: 2px solid rgba(255,255,255,0.4);
+  border-radius: 50%;
+  color: #fff;
+  font-size: 18px;
+  font-weight: bold;
+  font-family: monospace;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.05s, transform 0.05s;
+  /* Default size — overridden by media queries */
+  width: 60px;
+  height: 60px;
+}
+.ctrl-btn:active,
+.ctrl-btn.pressed {
+  transform: scale(0.9);
+}
+
+/* Direction buttons */
+.btn-dir  { background: rgba(255,255,255,0.15); font-size: 22px; }
+.btn-dir:active, .btn-dir.pressed { background: rgba(255,255,255,0.35); }
+
+/* Jump (A) */
+#btn-jump { background: rgba(80,180,255,0.35); border-color: rgba(80,180,255,0.7); }
+#btn-jump:active, #btn-jump.pressed { background: rgba(80,180,255,0.65); }
+
+/* Attack (B) */
+#btn-attack { background: rgba(255,200,0,0.35); border-color: rgba(255,200,0,0.8); }
+#btn-attack:active, #btn-attack.pressed { background: rgba(255,200,0,0.65); }
+
+/* ── Landscape mode: controls go to sides, canvas fills height ── */
+@media (orientation: landscape) {
+  #app {
+    flex-direction: row;
+  }
+  #gameCanvas {
+    width: auto;
+    max-width: none;
+    height: 100%;
+    max-height: 100%;
+  }
+  #controls {
+    display: none; /* controls rendered IN canvas via HUD on landscape */
+  }
+}
+
+/* ── Larger buttons on big phones / tablets ── */
+@media (min-height: 700px) and (orientation: portrait) {
+  .ctrl-btn { width: 72px; height: 72px; }
+}
+@media (min-height: 900px) and (orientation: portrait) {
+  .ctrl-btn { width: 84px; height: 84px; font-size: 24px; }
+  #controls { max-height: 200px; padding: 12px 24px; }
+}
+

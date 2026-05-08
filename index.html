@@ -3,11 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Samurai Frog</title>
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Samurai Frog 🐸⚔️</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <canvas id="gameCanvas"></canvas>
+  <div id="app">
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- HTML controls — only visible in portrait via CSS -->
+    <div id="controls">
+      <!-- D-Pad: Left / Right -->
+      <div id="dpad">
+        <button class="ctrl-btn btn-dir" id="btn-left"  aria-label="Move Left">◀</button>
+        <button class="ctrl-btn btn-dir" id="btn-right" aria-label="Move Right">▶</button>
+      </div>
+
+      <!-- Action buttons: Jump (A) + Attack (B) -->
+      <div id="actions">
+        <div id="actions-row">
+          <button class="ctrl-btn" id="btn-jump"   aria-label="Jump">A</button>
+          <button class="ctrl-btn" id="btn-attack" aria-label="Attack">B</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="js/main.js"></script>
 </body>
 </html>
